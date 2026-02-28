@@ -59,17 +59,23 @@ def main():
     old_data = load_data()
     new_data = get_woolworths()
 
+    print("DEBUG NEW DATA:", new_data)
+
+    # 强制发送一条测试消息（非常重要）
+    bot.send_message(
+        chat_id=CHAT_ID,
+        text="✅ Supermarket bot 测试消息：Workflow 正常运行"
+    )
+
     changes = check_price_changes(new_data, old_data)
 
     if changes:
         message = "🛒 Carnegie 今日新特价\n\n"
         message += "\n".join(changes)
-        message += f"\n\n更新时间 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
         bot.send_message(chat_id=CHAT_ID, text=message)
 
     save_data(new_data)
-
 
 if __name__ == "__main__":
     main()
