@@ -20,9 +20,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install playwright
-          playwright install
+          python -m pip install --upgrade pip
+          pip install requests python-telegram-bot
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
