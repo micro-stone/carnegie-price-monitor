@@ -1,20 +1,19 @@
 """
-ALDI 爬虫 — 更新版选择器 + 多策略提取
-ALDI 全国统一价，不需要 store ID。
+ALDI 爬虫 — cloudscraper 版，三重选择器策略
+ALDI 全国统一价，Carnegie Central 和 Glen Huntly 两家价格相同。
 """
 import re
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 
+_scraper = cloudscraper.create_scraper(
+    browser={"browser": "chrome", "platform": "darwin", "mobile": False}
+)
+
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept":          "text/html,application/xhtml+xml,*/*;q=0.8",
     "Accept-Language": "en-AU,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Referer":         "https://www.aldi.com.au/",
 }
 
 CATEGORY_URLS = {
@@ -25,118 +24,98 @@ CATEGORY_URLS = {
     "chicken": "https://www.aldi.com.au/en/groceries/meat-seafood/",
 }
 
+BRANCH = "Carnegie Central / Glen Huntly (统一价)"
+
 
 def get_price(keyword: str) -> dict | None:
-    kw_lower = keyword.lower()
-    category_url = None
-    for key, url in CATEGORY_URLS.items():
-        if key in kw_lower:
-            category_url = url
-            break
+    kw_lower     = keyword.lower()
+    category_url = next((u for k, u in CATEGORY_URLS.items() if k in kw_lower), None)
 
     if not category_url:
-        print(f"  [ALDI] 无对应分类 URL: '{keyword}'")
+        print(f"    [ALDI] 未配置分类 URL: '{keyword}'")
         return None
 
     try:
-        resp = requests.get(category_url, headers=HEADERS, timeout=20)
+        resp = _scraper.get(category_url, headers=HEADERS, timeout=20)
         resp.raise_for_status()
     except Exception as e:
-        print(f"  [ALDI] 请求失败: {e}")
+        print(f"    [ALDI] 请求失败: {e}")
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 尝试多套选择器（ALDI 网站有几种不同版本的 HTML 结构）
-    # 策略1: 新版 ALDI 模板
-    result = _try_selector_v1(soup, kw_lower, category_url)
-    if result:
-        return result
-
-    # 策略2: 旧版 ALDI 模板
-    result = _try_selector_v2(soup, kw_lower, category_url)
-    if result:
-        return result
-
-    # 策略3: 全文搜索 — 在任何含关键词的 <li> 或 <article> 里找价格
-    result = _try_generic(soup, kw_lower)
-    if result:
-        return result
-
-    print(f"  [ALDI] 所有策略均未找到 '{keyword}'，可能需要人工更新选择器")
-    return None
-
-
-def _try_selector_v1(soup, kw_lower, url) -> dict | None:
-    """新版 ALDI 模板（2024年后）"""
-    cards = soup.select(
-        "li.ft-product-tile, "
-        "li[class*='product'], "
-        "div[class*='product-tile'], "
-        "article[class*='tile']"
+    # 三重策略，任意命中就返回
+    return (
+        _strategy_new(soup, kw_lower, keyword)
+        or _strategy_old(soup, kw_lower, keyword)
+        or _strategy_generic(soup, kw_lower, keyword)
     )
-    return _search_cards(cards, kw_lower, "v1")
 
 
-def _try_selector_v2(soup, kw_lower, url) -> dict | None:
-    """旧版 ALDI 模板"""
+def _strategy_new(soup, kw_lower, keyword):
+    """新版 ALDI tile 结构（2024 年后）"""
     cards = soup.select(
-        "div.tile--product, "
-        "div.product-item, "
-        "div[data-module='product']"
+        "li.ft-product-tile, li[class*='product-tile'], "
+        "div[class*='product-tile'], article[class*='tile']"
     )
-    return _search_cards(cards, kw_lower, "v2")
+    return _match(cards, kw_lower, keyword, "new")
 
 
-def _try_generic(soup, kw_lower) -> dict | None:
-    """通用策略：找包含关键词文字的块级元素里的价格"""
-    # 找所有含关键词的文字节点的父容器
+def _strategy_old(soup, kw_lower, keyword):
+    """旧版 ALDI 结构"""
+    cards = soup.select(
+        "div.tile--product, div.product-item, "
+        "div[data-module='product'], li[class*='item']"
+    )
+    return _match(cards, kw_lower, keyword, "old")
+
+
+def _strategy_generic(soup, kw_lower, keyword):
+    """
+    通用兜底：找包含关键词的任意块级元素里的 $x.xx 价格。
+    不依赖 class 名，对 HTML 结构变化最具鲁棒性。
+    """
+    kw_words = kw_lower.split()
     for tag in soup.find_all(string=re.compile(kw_lower, re.I)):
         container = tag.find_parent(["li", "article", "div", "section"])
         if not container:
             continue
         text = container.get_text(" ", strip=True)
+        if len(text) > 600 or not any(w in text.lower() for w in kw_words):
+            continue
         price_m = re.search(r"\$\s*(\d+\.\d{2})", text)
-        if price_m and len(text) < 500:  # 避免匹配太大的容器
-            name_m = re.search(r"([A-Za-z][^$\n]{5,60})", text)
-            return {
-                "store": "ALDI",
-                "branch": "Carnegie Central / Glen Huntly (统一价)",
-                "name": name_m.group(1).strip() if name_m else keyword,
-                "price": float(price_m.group(1)),
-                "was_price": None,
-                "on_special": False,
-                "source": "generic",
-            }
+        if price_m:
+            name_el = container.select_one("h2, h3, [class*='name'], [class*='title']")
+            return _build(
+                name_el.get_text(strip=True) if name_el else keyword,
+                float(price_m.group(1)),
+                "generic",
+            )
     return None
 
 
-def _search_cards(cards, kw_lower, strategy) -> dict | None:
+def _match(cards, kw_lower, keyword, strategy):
     kw_words = kw_lower.split()
     for card in cards:
         text = card.get_text(" ", strip=True)
-        # 关键词匹配
         if not any(w in text.lower() for w in kw_words):
             continue
-
-        # 提取价格（$2.99 格式）
         price_m = re.search(r"\$\s*(\d+\.\d{2})", text)
         if not price_m:
             continue
-
-        # 提取商品名（第一个较短的文字块）
-        name_el = (
-            card.select_one("[class*='name'], [class*='title'], h2, h3")
-        )
-        name = name_el.get_text(strip=True) if name_el else text[:60]
-
-        return {
-            "store": "ALDI",
-            "branch": "Carnegie Central / Glen Huntly (统一价)",
-            "name": name,
-            "price": float(price_m.group(1)),
-            "was_price": None,
-            "on_special": False,
-            "source": f"selector_{strategy}",
-        }
+        name_el = card.select_one("[class*='name'], [class*='title'], h2, h3")
+        name    = name_el.get_text(strip=True) if name_el else keyword
+        return _build(name, float(price_m.group(1)), strategy)
     return None
+
+
+def _build(name, price, source):
+    return {
+        "store":      "ALDI",
+        "branch":     BRANCH,
+        "name":       name,
+        "price":      price,
+        "was_price":  None,
+        "on_special": False,
+        "source":     source,
+    }
