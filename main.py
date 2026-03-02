@@ -55,7 +55,7 @@ def detect_price_drop(new_data, old_data, threshold=0.2):
 
 
 def main():
-    print("开始终极稳定版抓取")
+    print("开始抓取")
 
     old_db = load_db()
     new_db = get_woolworths_deals()
