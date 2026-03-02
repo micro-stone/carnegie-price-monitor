@@ -2,7 +2,7 @@ name: Carnegie 3163 价格监控
 
 on:
   schedule:
-   # - cron: "0 21 * * *"   # 08:00 AEDT (UTC+11)
+    - cron: "0 21 * * *"   # 08:00 AEDT (UTC+11)
    # - cron: "0 1  * * *"   # 12:00 AEDT
    # - cron: "0 7  * * *"   # 18:00 AEDT
   workflow_dispatch:
